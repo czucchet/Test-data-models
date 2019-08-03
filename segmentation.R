@@ -1,3 +1,8 @@
+##################################################################
+########## Copyright Mudano Limited, 2019      ##################
+########## Script by Chris Zucchet, London, UK ##################
+##################################################################
+
 
 ### Review notes
 # a) Need to take out customers in brands with rewards against non savings or PCA accounts
@@ -499,6 +504,34 @@ inactive_factor = 0.03
 
 ########## 4c) Payments table  #########################
 
+########## 4ci) Payments references  #########################
+payment_method = c("Credit Card","Debit Card","Direct Debit","Cash","Direct Credit","Android","Apple","Standing Order","Credit Card","Debit Card")
+payment_method_probs = create_dist(payment_method,5)
+payments_multi = 75
+amount_multi = 500
+inactive_factor = 0.03
+payment_months = 1
+Last_Date = as.Date(paste0("01/",month(Sys.Date())-payment_months,"/",(year(Sys.Date()))), format = "%d/%m/%Y")
+Current_Day = as.Date(Sys.Date(), format = "%d/%m/%Y")
+avg_payments_p_month = 1
+n_payments_p_month = nrow(cs_source)*avg_payments_p_month 
+n_payments_p_month_thresh = 0.01
+payment_records = round(rnorm(1,n_payments_p_month,n_payments_p_month*n_payments_p_month_thresh))*payment_months
+spend_cat_1 = c("Retail","Retail","Retail","Retail")
+spend_cat_2 = c("Supermarket","Supermarket","Supermarket","Supermarket")   
+vendor = c("Tesco", "Sainsbury", "Co-Op", "O'Grady's Malt Shop")
+
+location = c("London, UK","Bristol, UK","Liverpool, UK","Liverpool, UK","Bristol, UK","London, UK","Overseas")
+location_probs = create_dist(location,5)
+Banks = c("HSBC", "LBG", "Barclays", "RBS", "Standard Chartered", "Tesco Bank", "Sainsbury's Bank", "Credit Suisse", "UBS", "Monzo", "Revolut")
+banks = data.frame(Banks = Banks,probs = sort(runif(length(Banks)), decreasing = T)) %>% mutate_if(is.factor, as.character) %>% 
+  mutate(probs = probs/sum(probs))
+
+vendor_table = data.frame(vendor,spend_cat_1,spend_cat_2) %>% mutate_if(is.factor, as.character )
+
+
+
+
 payments_t = cs_source %>% 
   select(ID,Brand,Product,Segment,Account_sts,start_date)  %>%
   distinct() %>% filter(Product %in% c("PCA", "Savings", "Credit Card"))
@@ -510,19 +543,26 @@ payments_t2 = payments_t %>%
          Days_In_Scope = ifelse(start_date>Last_Date,as.numeric(Current_Day - start_date),as.numeric(Current_Day - Last_Date)),
          probs = Avg_Payments_P_Month*Days_In_Scope/sum(Avg_Payments_P_Month*Days_In_Scope)
   )
-rm(payments_t)
+#rm(payments_t)
 payments_t3 = sample(rep(payments_t2$cust_key, round(payment_records * payments_t2$probs))) %>% data.frame() ;names(payments_t3) = "cust_key"
 payments = payments_t3 %>%  mutate(cust_key = as.character(cust_key)) %>% left_join(payments_t2) %>% 
   select(-cust_key,-Days_In_Scope,-probs, -start_date,-Avg_Payments_P_Month) %>% 
   mutate(payment_date = as.Date(round(runif(length(ID),as.numeric(Last_Date),as.numeric(Sys.Date()))), origin = "1970-01-01"),
          event_id = random_gen_pay(length(payment_date)),
-         vendor = sample(vendors, length(payment_date), replace = T),
+         vendor = sample(vendor, length(payment_date), replace = T),
          trans_amt =  round(rbeta(length(payment_date),1,12)*amount_multi)
   )  %>% left_join(vendor_table) %>% 
-  mutate(location = sample(location, length(payment_date), replace = T),
+  mutate(location =  sample(location, length(payment_date),prob = data.matrix(location_probs), replace = T),
          is_fraud = round(rnorm(length(payment_date),0.28,0.1)),
          pred_fraud = ifelse(is_fraud == 1,round(rnorm(length(payment_date),0.65,0.1)),round(rnorm(length(payment_date),0.3,0.1))),
-         bank = sample(rep(banks$Banks, round(length(payment_date) * banks$probs)))
+         bank = sample(rep(banks$Banks, round(length(payment_date) * banks$probs))),
+         pay_method = sample(payment_method, length(payment_date),prob = data.matrix(payment_method_probs), replace = T),
+         Is_Foreign = ifelse(location == "Overseas",1,0),
+         Payment_Band = ifelse(trans_amt <= 10, "0-10",
+                               ifelse(trans_amt > 10 & trans_amt <= 30, "10-30",
+                                      ifelse(trans_amt > 30 & trans_amt <= 100, "30-100",
+                                             ifelse(trans_amt > 100 & trans_amt <= 250, "100-250",
+                                                    ifelse(trans_amt > 250 & trans_amt <= 500, "250-500","500+")))))
   )
 
 dbRemoveTable(dsol_proto, paste0(client_name,"_PAYMENTS_TABLE"))
